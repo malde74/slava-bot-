@@ -2,7 +2,6 @@ import logging
 import os
 from datetime import datetime, time
 import httpx
-from telegram import Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
@@ -13,205 +12,179 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 CHAT_ID = None
 
-# ===== 4 АГЕНТА =====
 AGENTS = [
     {
         "emoji": "🔍",
         "role": "Аналитик рынка",
-        "prompt": """Ты — аналитик кондитерского рынка. Твоя задача: найти и проанализировать самые важные новости рынка с точки зрения цифр, трендов и данных.
-Контекст: анализируешь для шоколадной фабрики Томер (Россия, выручка 4 млрд руб, производство шоколада и глазурей).
-Формат ответа: 3-4 ключевых факта с цифрами. Без вступлений."""
+        "prompt": "Ты — аналитик кондитерского рынка России. Анализируешь для шоколадной фабрики Томер (выручка 4 млрд руб). Найди главные новости рынка — цифры, тренды, данные. Формат: 3-4 конкретных факта с цифрами. Без вступлений.",
+        "use_search": True
     },
     {
         "emoji": "🏭",
         "role": "Производственник",
-        "prompt": """Ты — директор производства шоколадной фабрики. Смотришь на новости рынка с точки зрения производства: сырьё, какао, оборудование, логистика, цепочки поставок.
-Контекст: фабрика Томер производит шоколад, глазури, пасты, начинки. Какао сейчас ~$3000/т (упало с $12000).
-Формат ответа: 2-3 вывода — что нужно сделать на производстве прямо сейчас. Без вступлений."""
+        "prompt": "Ты — директор производства шоколадной фабрики Томер (шоколад, глазури, пасты). Какао сейчас ~$3000/т. Анализируй новости с точки зрения сырья, производства, поставок. Формат: 2-3 вывода — что делать на производстве. Без вступлений.",
+        "use_search": False
     },
     {
         "emoji": "💰",
         "role": "Финансист",
-        "prompt": """Ты — финансовый директор шоколадной фабрики. Анализируешь новости с точки зрения маржи, цен, затрат и финансовых рисков.
-Контекст: фабрика Томер, выручка 4 млрд руб. Розничные цены на шоколад в РФ выросли до 1483 руб/кг. Продажи шоколада падают второй год.
-Формат ответа: 2-3 финансовых вывода с рекомендациями по ценообразованию или затратам. Без вступлений."""
+        "prompt": "Ты — финансовый директор фабрики Томер (выручка 4 млрд руб). Розничные цены на шоколад 1483 руб/кг. Анализируй с точки зрения маржи, цен, затрат. Формат: 2-3 финансовых вывода. Без вступлений.",
+        "use_search": False
     },
     {
         "emoji": "⚔️",
         "role": "Конкурентный разведчик",
-        "prompt": """Ты — специалист по конкурентной разведке в кондитерской отрасли. Ищешь в новостях сигналы о действиях конкурентов, новых игроках, изменениях на рынке.
-Контекст: главные конкуренты Томера — Глазурьпром (сейчас в уязвимом положении, умер собственник), другие производители глазурей и шоколада в РФ.
-Формат ответа: 2-3 конкурентных инсайта и что с этим делать. Без вступлений."""
+        "prompt": "Ты — специалист по конкурентной разведке. Главный конкурент Томера — Глазурьпром (сейчас уязвим). Ищи сигналы о действиях конкурентов. Формат: 2-3 конкурентных инсайта. Без вступлений.",
+        "use_search": False
     }
 ]
 
-async def call_claude(system: str, user_prompt: str, use_search: bool = True) -> str:
+async def call_claude(system: str, user_msg: str, use_search: bool = False) -> str:
+    api_key = ANTHROPIC_API_KEY
+    if not api_key:
+        logger.error("ANTHROPIC_API_KEY is empty!")
+        return "Ошибка: API ключ не настроен."
+    
     payload = {
         "model": "claude-sonnet-4-20250514",
         "max_tokens": 600,
         "system": system,
-        "messages": [{"role": "user", "content": user_prompt}]
+        "messages": [{"role": "user", "content": user_msg}]
     }
     if use_search:
         payload["tools"] = [{"type": "web_search_20250305", "name": "web_search"}]
 
-    async with httpx.AsyncClient(timeout=90) as client:
-        response = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01"
-            },
-            json=payload
-        )
-        data = response.json()
-        text_parts = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
-        return "\n".join(text_parts) or "Нет данных."
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01"
+                },
+                json=payload
+            )
+            logger.info(f"API response status: {resp.status_code}")
+            data = resp.json()
+            
+            if "error" in data:
+                logger.error(f"API error: {data['error']}")
+                return f"Ошибка API: {data['error'].get('message', 'неизвестно')}"
+            
+            texts = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
+            result = "\n".join(texts).strip()
+            return result if result else "Нет данных от агента."
+    except Exception as e:
+        logger.error(f"Exception in call_claude: {e}")
+        return f"Ошибка соединения: {str(e)}"
 
 async def get_crew_analysis(news_type: str) -> str:
     today = datetime.now().strftime("%d.%m.%Y")
 
-    # Шаг 1 — Аналитик собирает новости (с поиском)
     if news_type == "daily":
-        base_query = f"Найди главные новости кондитерского рынка России за последние 2 дня ({today}). Цены на какао, конкуренты, ритейл, регуляторика."
+        base_query = f"Сегодня {today}. Найди и проанализируй главные новости кондитерского рынка России за последние 2 дня. Включи цены на какао, действия конкурентов, ритейл, потребительские тренды."
     else:
-        base_query = f"Найди главные мировые тренды и инновации кондитерской отрасли за эту неделю ({today}). Технологии, новые продукты, sustainability, премиум."
+        base_query = f"Сегодня {today}. Найди и проанализируй главные мировые тренды кондитерской отрасли за эту неделю. Новые продукты, технологии, sustainability, премиум-сегмент."
 
-    logger.info("Агент 1: сбор новостей...")
+    # Агент 1 — с поиском
+    logger.info("Запускаю Аналитика рынка (с поиском)...")
     raw_news = await call_claude(AGENTS[0]["prompt"], base_query, use_search=True)
+    logger.info(f"Аналитик вернул: {raw_news[:100]}")
 
-    # Шаги 2-4 — остальные агенты анализируют без поиска
     results = [f"{AGENTS[0]['emoji']} *{AGENTS[0]['role']}*\n{raw_news}"]
 
+    # Агенты 2-4 — анализируют на основе новостей аналитика
     for agent in AGENTS[1:]:
-        logger.info(f"Агент: {agent['role']}...")
-        analysis_query = f"Вот новости кондитерского рынка на {today}:\n\n{raw_news}\n\nДай свой анализ с позиции твоей роли."
-        result = await call_claude(agent["prompt"], analysis_query, use_search=False)
+        logger.info(f"Запускаю агента: {agent['role']}...")
+        msg = f"Вот свежие новости кондитерского рынка на {today}:\n\n{raw_news}\n\nДай свой анализ."
+        result = await call_claude(agent["prompt"], msg, use_search=False)
         results.append(f"{agent['emoji']} *{agent['role']}*\n{result}")
 
-    # Шаг 5 — итоговый вывод
+    # Итоговый синтез
     logger.info("Финальный синтез...")
-    synthesis_prompt = """Ты — CEO шоколадной фабрики Томер. Тебе принесли анализ от 4 экспертов. 
-Сделай финальный вывод: 2-3 конкретных действия на эту неделю. Очень кратко и по делу."""
-    
-    all_analysis = "\n\n".join(results)
-    synthesis = await call_claude(
-        synthesis_prompt,
-        f"Анализ экспертов:\n\n{all_analysis}\n\nЧто делаем на этой неделе?",
-        use_search=False
-    )
+    ceo_prompt = "Ты — CEO шоколадной фабрики Томер. Получил анализ от 4 экспертов. Сформулируй 3 конкретных действия на эту неделю. Очень кратко."
+    all_text = "\n\n".join(results)
+    synthesis = await call_claude(ceo_prompt, f"Анализ команды:\n\n{all_text}\n\nЧто делаем на неделе?", use_search=False)
     results.append(f"🎯 *Решения на неделю*\n{synthesis}")
 
-    return "\n\n─────────────────\n\n".join(results)
-
-async def send_daily_news(context: ContextTypes.DEFAULT_TYPE):
-    load_chat_id()
-    if not CHAT_ID:
-        return
-    await context.bot.send_message(
-        chat_id=CHAT_ID,
-        text=f"🌅 Доброе утро, Андрей!\n\nЗапускаю команду из 4 агентов — анализируем рынок...",
-    )
-    try:
-        analysis = await get_crew_analysis("daily")
-        header = f"📰 *Кондитерский рынок России — {datetime.now().strftime('%d.%m.%Y')}*\n\n"
-        # Telegram limit 4096 chars — split if needed
-        full_text = header + analysis
-        for i in range(0, len(full_text), 4000):
-            await context.bot.send_message(
-                chat_id=CHAT_ID,
-                text=full_text[i:i+4000],
-                parse_mode="Markdown"
-            )
-    except Exception as e:
-        await context.bot.send_message(chat_id=CHAT_ID, text=f"Ошибка: {e}")
-
-async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
-    load_chat_id()
-    if not CHAT_ID:
-        return
-    await context.bot.send_message(
-        chat_id=CHAT_ID,
-        text="🌍 Запускаю команду агентов — анализируем мировые тренды...",
-    )
-    try:
-        analysis = await get_crew_analysis("weekly")
-        header = f"🌐 *Мировые тренды кондитерки — {datetime.now().strftime('%d.%m.%Y')}*\n\n"
-        full_text = header + analysis
-        for i in range(0, len(full_text), 4000):
-            await context.bot.send_message(
-                chat_id=CHAT_ID,
-                text=full_text[i:i+4000],
-                parse_mode="Markdown"
-            )
-    except Exception as e:
-        await context.bot.send_message(chat_id=CHAT_ID, text=f"Ошибка: {e}")
+    return "\n\n─────────────\n\n".join(results)
 
 def load_chat_id():
     global CHAT_ID
     try:
-        with open("/tmp/slava_chat_id.txt", "r") as f:
+        with open("/tmp/slava_chat_id.txt") as f:
             CHAT_ID = int(f.read().strip())
     except:
         pass
 
-def save_chat_id(chat_id):
+def save_chat_id(cid):
     global CHAT_ID
-    CHAT_ID = chat_id
+    CHAT_ID = cid
     with open("/tmp/slava_chat_id.txt", "w") as f:
-        f.write(str(chat_id))
+        f.write(str(cid))
+
+async def send_analysis(send_fn, news_type: str):
+    try:
+        analysis = await get_crew_analysis(news_type)
+        prefix = "📰" if news_type == "daily" else "🌐"
+        label = "Кондитерский рынок России" if news_type == "daily" else "Мировые тренды кондитерки"
+        header = f"{prefix} *{label} — {datetime.now().strftime('%d.%m.%Y')}*\n\n"
+        full = header + analysis
+        for i in range(0, len(full), 4000):
+            await send_fn(full[i:i+4000], parse_mode="Markdown")
+    except Exception as e:
+        await send_fn(f"❌ Ошибка: {e}")
 
 async def start(update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
     await update.message.reply_text(
         "👋 *Привет, Андрей! Это Слава.*\n\n"
-        "Теперь работаю как команда из 4 агентов:\n"
+        "Работаю как команда 4 агентов:\n"
         "🔍 Аналитик рынка\n"
         "🏭 Производственник\n"
         "💰 Финансист\n"
         "⚔️ Конкурентный разведчик\n"
-        "🎯 + итоговые решения на неделю\n\n"
-        "📅 *Расписание:*\n"
-        "🌅 Каждый день в 8:00 — рынок России\n"
-        "🌐 Воскресенье в 9:00 — мировые тренды\n\n"
-        "Команды:\n"
-        "/news — анализ прямо сейчас\n"
-        "/weekly — мировой дайджест сейчас\n\n"
-        "Готов! 🚀",
+        "🎯 + Решения на неделю\n\n"
+        "🌅 Каждый день 8:00 — рынок России\n"
+        "🌐 Воскресенье 9:00 — мировые тренды\n\n"
+        "/news — запустить сейчас\n"
+        "/weekly — мировой дайджест",
         parse_mode="Markdown"
     )
 
 async def news_command(update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
     await update.message.reply_text("⏳ Запускаю 4 агентов, подожди 1-2 минуты...")
-    analysis = await get_crew_analysis("daily")
-    header = f"📰 *Кондитерский рынок России — {datetime.now().strftime('%d.%m.%Y')}*\n\n"
-    full_text = header + analysis
-    for i in range(0, len(full_text), 4000):
-        await update.message.reply_text(full_text[i:i+4000], parse_mode="Markdown")
+    await send_analysis(update.message.reply_text, "daily")
 
 async def weekly_command(update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
-    await update.message.reply_text("⏳ Запускаю 4 агентов на мировые тренды...")
-    analysis = await get_crew_analysis("weekly")
-    header = f"🌐 *Мировые тренды кондитерки — {datetime.now().strftime('%d.%m.%Y')}*\n\n"
-    full_text = header + analysis
-    for i in range(0, len(full_text), 4000):
-        await update.message.reply_text(full_text[i:i+4000], parse_mode="Markdown")
+    await update.message.reply_text("⏳ Запускаю агентов на мировые тренды...")
+    await send_analysis(update.message.reply_text, "weekly")
+
+async def auto_daily(context: ContextTypes.DEFAULT_TYPE):
+    load_chat_id()
+    if not CHAT_ID: return
+    await context.bot.send_message(CHAT_ID, "🌅 Доброе утро, Андрей! Запускаю команду агентов...")
+    await send_analysis(lambda t, **kw: context.bot.send_message(CHAT_ID, t, **kw), "daily")
+
+async def auto_weekly(context: ContextTypes.DEFAULT_TYPE):
+    load_chat_id()
+    if not CHAT_ID: return
+    await context.bot.send_message(CHAT_ID, "🌍 Запускаю агентов — мировые тренды...")
+    await send_analysis(lambda t, **kw: context.bot.send_message(CHAT_ID, t, **kw), "weekly")
 
 def main():
+    logger.info(f"API key present: {bool(ANTHROPIC_API_KEY)}")
     load_chat_id()
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("news", news_command))
     app.add_handler(CommandHandler("weekly", weekly_command))
-
-    jq = app.job_queue
-    jq.run_daily(send_daily_news, time=time(5, 0))
-    jq.run_daily(send_weekly_digest, time=time(6, 0), days=(6,))
-
-    logger.info("✅ Слава (4 агента) запущен!")
+    app.job_queue.run_daily(auto_daily, time=time(5, 0))
+    app.job_queue.run_daily(auto_weekly, time=time(6, 0), days=(6,))
+    logger.info("✅ Слава запущен!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
