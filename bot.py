@@ -40,6 +40,29 @@ AGENTS = [
     }
 ]
 
+BANKRUPTCY_AGENT = {
+    "emoji": "🏭",
+    "role": "Охотник за активами",
+    "prompt": """Ты — специалист по покупке активов на торгах банкротства для шоколадной фабрики Томер (Поярково, Солнечногорский район МО).
+
+Приоритеты поиска:
+1. Производственные помещения и склады — Солнечногорский район, Химки, вся Московская область
+2. Пищевое и кондитерское оборудование — вся Россия (можно перевезти)
+3. Готовый пищевой бизнес — Москва и МО
+
+Ищи на: tbankrot.ru, baids.ru, finderlot.ru, rutorgi.com, bankrupt.alfalot.ru
+Также проверяй: ЕФРСБ (fedresurs.ru), официальные площадки — Сбербанк-АСТ, МЭТС, Фабрикант
+
+Формат ответа:
+— Название лота и адрес
+— Начальная цена
+— Дата окончания приёма заявок
+— Почему интересно для Томера
+— Ссылка
+
+Если конкретных лотов нет — дай общую картину что сейчас есть на рынке. Без вступлений."""
+}
+
 async def call_claude(system: str, user_msg: str, use_search: bool = False) -> str:
     api_key = ANTHROPIC_API_KEY
     if not api_key:
@@ -155,8 +178,9 @@ async def start(update, context: ContextTypes.DEFAULT_TYPE):
         "🎯 + Решения на неделю\n\n"
         "🌅 Каждый день 8:00 — рынок России\n"
         "🌐 Воскресенье 9:00 — мировые тренды\n\n"
-        "/news — запустить сейчас\n"
-        "/weekly — мировой дайджест",
+        "/news — рынок России сейчас\n"
+        "/weekly — мировые тренды\n"
+        "/lots — лоты банкротства сейчас",
         parse_mode="Markdown"
     )
 
@@ -169,6 +193,16 @@ async def weekly_command(update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
     await update.message.reply_text("⏳ Запускаю агентов на мировые тренды...")
     await send_analysis(update.message.reply_text, "weekly")
+
+async def bankruptcy_command(update, context: ContextTypes.DEFAULT_TYPE):
+    save_chat_id(update.effective_chat.id)
+    await update.message.reply_text("🏭 Ищу лоты банкротства — Солнечногорск/Химки/МО + оборудование по России...")
+    query = f"Найди актуальные лоты на торгах банкротства: 1) производственные помещения и склады в Солнечногорском районе, Химках, Московской области 2) пищевое и кондитерское оборудование по всей России 3) готовый пищевой бизнес в МО. Проверь: tbankrot.ru, baids.ru, finderlot.ru, rutorgi.com. Дата: {datetime.now().strftime('%d.%m.%Y')}"
+    result = await call_claude(BANKRUPTCY_AGENT["prompt"], query, use_search=True)
+    header = f"🏭 *Лоты банкротства — {datetime.now().strftime('%d.%m.%Y')}*\n_(Солнечногорск/Химки/МО + оборудование по России)_\n\n"
+    full = header + result
+    for i in range(0, len(full), 4000):
+        await update.message.reply_text(full[i:i+4000], parse_mode="Markdown")
 
 async def auto_daily(context: ContextTypes.DEFAULT_TYPE):
     load_chat_id()
@@ -189,6 +223,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("news", news_command))
     app.add_handler(CommandHandler("weekly", weekly_command))
+    app.add_handler(CommandHandler("lots", bankruptcy_command))
     app.job_queue.run_daily(auto_daily, time=time(5, 0))
     app.job_queue.run_daily(auto_weekly, time=time(6, 0), days=(6,))
     logger.info("✅ Слава запущен!")
