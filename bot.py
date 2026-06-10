@@ -197,7 +197,7 @@ async def weekly_command(update, context: ContextTypes.DEFAULT_TYPE):
 async def bankruptcy_command(update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
     await update.message.reply_text("🏭 Ищу лоты банкротства — Солнечногорск/Химки/МО + оборудование по России...")
-    query = f"Найди актуальные лоты на торгах банкротства: 1) производственные помещения и склады в Солнечногорском районе, Химках, Московской области 2) пищевое и кондитерское оборудование по всей России 3) готовый пищевой бизнес в МО. Проверь: tbankrot.ru, baids.ru, finderlot.ru, rutorgi.com. Дата: {datetime.now().strftime('%d.%m.%Y')}"
+    query = f"Найди актуальные лоты на торгах банкротства: 1) производственные помещения и склады в Солнечногорском районе, Химках, Московской области 2) пищевое, кондитерское, шоколадное оборудование, оборудование для работы с какао — по всей России 3) готовый пищевой или кондитерский бизнес в МО 4) любые активы связанные с шоколадом, какао, кондитерским производством. Проверь: tbankrot.ru, baids.ru, finderlot.ru, rutorgi.com. Дата: {datetime.now().strftime('%d.%m.%Y')}"
     result = await call_claude(BANKRUPTCY_AGENT["prompt"], query, use_search=True)
     header = f"🏭 *Лоты банкротства — {datetime.now().strftime('%d.%m.%Y')}*\n_(Солнечногорск/Химки/МО + оборудование по России)_\n\n"
     full = header + result
