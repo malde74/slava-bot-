@@ -2,6 +2,7 @@ import logging
 import os
 from datetime import datetime, time
 import httpx
+import asyncio
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
@@ -94,18 +95,24 @@ async def get_crew_analysis(news_type: str) -> str:
 
     results = [f"{AGENTS[0]['emoji']} *{AGENTS[0]['role']}*\n{raw_news}"]
 
-    # Агенты 2-4 — анализируют на основе новостей аналитика
+    # Агенты 2-4 — с паузой 15 сек между запросами
+    # Передаём только короткое резюме чтобы не превышать лимит токенов
+    short_news = raw_news[:800] if len(raw_news) > 800 else raw_news
+    
     for agent in AGENTS[1:]:
-        logger.info(f"Запускаю агента: {agent['role']}...")
-        msg = f"Вот свежие новости кондитерского рынка на {today}:\n\n{raw_news}\n\nДай свой анализ."
+        logger.info(f"Пауза 15 сек перед агентом: {agent['role']}...")
+        await asyncio.sleep(15)
+        msg = f"Новости кондитерского рынка ({today}):\n\n{short_news}\n\nДай краткий анализ (3-4 предложения)."
         result = await call_claude(agent["prompt"], msg, use_search=False)
         results.append(f"{agent['emoji']} *{agent['role']}*\n{result}")
 
     # Итоговый синтез
-    logger.info("Финальный синтез...")
-    ceo_prompt = "Ты — CEO шоколадной фабрики Томер. Получил анализ от 4 экспертов. Сформулируй 3 конкретных действия на эту неделю. Очень кратко."
-    all_text = "\n\n".join(results)
-    synthesis = await call_claude(ceo_prompt, f"Анализ команды:\n\n{all_text}\n\nЧто делаем на неделе?", use_search=False)
+    logger.info("Пауза перед синтезом...")
+    await asyncio.sleep(15)
+    ceo_prompt = "Ты — CEO шоколадной фабрики Томер. Получил анализ от экспертов. Сформулируй 3 конкретных действия на эту неделю. Очень кратко — не более 5 строк."
+    # Передаём только короткие выжимки
+    short_results = "\n\n".join([r[:300] for r in results])
+    synthesis = await call_claude(ceo_prompt, f"Анализ команды:\n\n{short_results}\n\nЧто делаем?", use_search=False)
     results.append(f"🎯 *Решения на неделю*\n{synthesis}")
 
     return "\n\n─────────────\n\n".join(results)
