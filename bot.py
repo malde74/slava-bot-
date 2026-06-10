@@ -1,185 +1,218 @@
-import os
 import logging
-import anthropic
-from datetime import datetime
-from zoneinfo import ZoneInfo
+import os
+from datetime import datetime, time
+import httpx
+from telegram import Bot
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-)
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8982607801:AAEC_Xy4TPjpnxaECaJz03AW21bHDCvAzJI")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
-# Хранилище chat_id пользователей (в памяти; при рестарте очищается)
-subscribers: set[int] = set()
+CHAT_ID = None
 
-anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+# ===== 4 АГЕНТА =====
+AGENTS = [
+    {
+        "emoji": "🔍",
+        "role": "Аналитик рынка",
+        "prompt": """Ты — аналитик кондитерского рынка. Твоя задача: найти и проанализировать самые важные новости рынка с точки зрения цифр, трендов и данных.
+Контекст: анализируешь для шоколадной фабрики Томер (Россия, выручка 4 млрд руб, производство шоколада и глазурей).
+Формат ответа: 3-4 ключевых факта с цифрами. Без вступлений."""
+    },
+    {
+        "emoji": "🏭",
+        "role": "Производственник",
+        "prompt": """Ты — директор производства шоколадной фабрики. Смотришь на новости рынка с точки зрения производства: сырьё, какао, оборудование, логистика, цепочки поставок.
+Контекст: фабрика Томер производит шоколад, глазури, пасты, начинки. Какао сейчас ~$3000/т (упало с $12000).
+Формат ответа: 2-3 вывода — что нужно сделать на производстве прямо сейчас. Без вступлений."""
+    },
+    {
+        "emoji": "💰",
+        "role": "Финансист",
+        "prompt": """Ты — финансовый директор шоколадной фабрики. Анализируешь новости с точки зрения маржи, цен, затрат и финансовых рисков.
+Контекст: фабрика Томер, выручка 4 млрд руб. Розничные цены на шоколад в РФ выросли до 1483 руб/кг. Продажи шоколада падают второй год.
+Формат ответа: 2-3 финансовых вывода с рекомендациями по ценообразованию или затратам. Без вступлений."""
+    },
+    {
+        "emoji": "⚔️",
+        "role": "Конкурентный разведчик",
+        "prompt": """Ты — специалист по конкурентной разведке в кондитерской отрасли. Ищешь в новостях сигналы о действиях конкурентов, новых игроках, изменениях на рынке.
+Контекст: главные конкуренты Томера — Глазурьпром (сейчас в уязвимом положении, умер собственник), другие производители глазурей и шоколада в РФ.
+Формат ответа: 2-3 конкурентных инсайта и что с этим делать. Без вступлений."""
+    }
+]
 
+async def call_claude(system: str, user_prompt: str, use_search: bool = True) -> str:
+    payload = {
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 600,
+        "system": system,
+        "messages": [{"role": "user", "content": user_prompt}]
+    }
+    if use_search:
+        payload["tools"] = [{"type": "web_search_20250305", "name": "web_search"}]
 
-def ask_claude(prompt: str) -> str:
-    message = anthropic_client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return message.content[0].text
-
-
-def get_ru_news() -> str:
-    prompt = (
-        "Ты аналитик кондитерского рынка России. "
-        "Составь краткую сводку актуальных новостей и трендов российского кондитерского рынка "
-        "за последние дни (новые продукты, изменения цен, крупные игроки, потребительские тренды). "
-        "Формат: 5–7 пунктов, каждый с заголовком жирным и коротким описанием. "
-        "Пиши на русском языке, деловым стилем."
-    )
-    return ask_claude(prompt)
-
-
-def get_world_digest() -> str:
-    prompt = (
-        "Ты аналитик мирового кондитерского рынка. "
-        "Составь воскресный дайджест мировых трендов и инноваций в кондитерской отрасли: "
-        "новые технологии, ингредиенты, упаковка, международные выставки, крупные сделки. "
-        "Формат: 5–7 пунктов, каждый с заголовком жирным и коротким описанием. "
-        "Пиши на русском языке, деловым стилем."
-    )
-    return ask_claude(prompt)
-
-
-# ── Команды ────────────────────────────────────────────────────────────────
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    subscribers.add(chat_id)
-    await update.message.reply_text(
-        "👋 Привет! Я *Слава* — бот мониторинга кондитерского рынка.\n\n"
-        "🌅 Каждый день в *8:00 (Москва)* — новости российского рынка\n"
-        "🌐 Каждое *воскресенье в 9:00* — мировые тренды\n\n"
-        "Ты подписан на автоматическую рассылку ✅\n\n"
-        "Доступные команды:\n"
-        "/news — новости прямо сейчас\n"
-        "/weekly — мировой дайджест прямо сейчас\n"
-        "/help — помощь",
-        parse_mode="Markdown",
-    )
-
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "*Команды Славы:*\n\n"
-        "/start — активация и подписка\n"
-        "/news — сводка новостей кондитерского рынка России\n"
-        "/weekly — мировые тренды и инновации\n"
-        "/help — это сообщение",
-        parse_mode="Markdown",
-    )
-
-
-async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("⏳ Собираю новости, подожди 30–60 секунд…")
-    try:
-        text = get_ru_news()
-        await update.message.reply_text(
-            f"🌅 *Кондитерский рынок России — {datetime.now(MOSCOW_TZ).strftime('%d.%m.%Y')}*\n\n{text}",
-            parse_mode="Markdown",
+    async with httpx.AsyncClient(timeout=90) as client:
+        response = await client.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01"
+            },
+            json=payload
         )
-    except Exception as e:
-        logger.error("Ошибка /news: %s", e)
-        await update.message.reply_text("❌ Ошибка при получении новостей. Проверь ANTHROPIC_API_KEY.")
+        data = response.json()
+        text_parts = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
+        return "\n".join(text_parts) or "Нет данных."
 
+async def get_crew_analysis(news_type: str) -> str:
+    today = datetime.now().strftime("%d.%m.%Y")
 
-async def cmd_weekly(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("⏳ Готовлю мировой дайджест, подожди…")
-    try:
-        text = get_world_digest()
-        await update.message.reply_text(
-            f"🌐 *Мировые тренды кондитерской отрасли — {datetime.now(MOSCOW_TZ).strftime('%d.%m.%Y')}*\n\n{text}",
-            parse_mode="Markdown",
-        )
-    except Exception as e:
-        logger.error("Ошибка /weekly: %s", e)
-        await update.message.reply_text("❌ Ошибка. Проверь ANTHROPIC_API_KEY.")
+    # Шаг 1 — Аналитик собирает новости (с поиском)
+    if news_type == "daily":
+        base_query = f"Найди главные новости кондитерского рынка России за последние 2 дня ({today}). Цены на какао, конкуренты, ритейл, регуляторика."
+    else:
+        base_query = f"Найди главные мировые тренды и инновации кондитерской отрасли за эту неделю ({today}). Технологии, новые продукты, sustainability, премиум."
 
+    logger.info("Агент 1: сбор новостей...")
+    raw_news = await call_claude(AGENTS[0]["prompt"], base_query, use_search=True)
 
-# ── Авторассылка ────────────────────────────────────────────────────────────
+    # Шаги 2-4 — остальные агенты анализируют без поиска
+    results = [f"{AGENTS[0]['emoji']} *{AGENTS[0]['role']}*\n{raw_news}"]
 
-async def daily_news_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Ежедневно в 8:00 МСК — российский рынок."""
-    if not subscribers:
+    for agent in AGENTS[1:]:
+        logger.info(f"Агент: {agent['role']}...")
+        analysis_query = f"Вот новости кондитерского рынка на {today}:\n\n{raw_news}\n\nДай свой анализ с позиции твоей роли."
+        result = await call_claude(agent["prompt"], analysis_query, use_search=False)
+        results.append(f"{agent['emoji']} *{agent['role']}*\n{result}")
+
+    # Шаг 5 — итоговый вывод
+    logger.info("Финальный синтез...")
+    synthesis_prompt = """Ты — CEO шоколадной фабрики Томер. Тебе принесли анализ от 4 экспертов. 
+Сделай финальный вывод: 2-3 конкретных действия на эту неделю. Очень кратко и по делу."""
+    
+    all_analysis = "\n\n".join(results)
+    synthesis = await call_claude(
+        synthesis_prompt,
+        f"Анализ экспертов:\n\n{all_analysis}\n\nЧто делаем на этой неделе?",
+        use_search=False
+    )
+    results.append(f"🎯 *Решения на неделю*\n{synthesis}")
+
+    return "\n\n─────────────────\n\n".join(results)
+
+async def send_daily_news(context: ContextTypes.DEFAULT_TYPE):
+    load_chat_id()
+    if not CHAT_ID:
         return
+    await context.bot.send_message(
+        chat_id=CHAT_ID,
+        text=f"🌅 Доброе утро, Андрей!\n\nЗапускаю команду из 4 агентов — анализируем рынок...",
+    )
     try:
-        text = get_ru_news()
-        msg = (
-            f"🌅 *Кондитерский рынок России — {datetime.now(MOSCOW_TZ).strftime('%d.%m.%Y')}*\n\n{text}"
-        )
-        for chat_id in list(subscribers):
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-            except Exception as e:
-                logger.warning("Не удалось отправить %s: %s", chat_id, e)
+        analysis = await get_crew_analysis("daily")
+        header = f"📰 *Кондитерский рынок России — {datetime.now().strftime('%d.%m.%Y')}*\n\n"
+        # Telegram limit 4096 chars — split if needed
+        full_text = header + analysis
+        for i in range(0, len(full_text), 4000):
+            await context.bot.send_message(
+                chat_id=CHAT_ID,
+                text=full_text[i:i+4000],
+                parse_mode="Markdown"
+            )
     except Exception as e:
-        logger.error("daily_news_job error: %s", e)
+        await context.bot.send_message(chat_id=CHAT_ID, text=f"Ошибка: {e}")
 
-
-async def weekly_digest_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Каждое воскресенье в 9:00 МСК — мировые тренды."""
-    if not subscribers:
+async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
+    load_chat_id()
+    if not CHAT_ID:
         return
+    await context.bot.send_message(
+        chat_id=CHAT_ID,
+        text="🌍 Запускаю команду агентов — анализируем мировые тренды...",
+    )
     try:
-        text = get_world_digest()
-        msg = (
-            f"🌐 *Мировые тренды кондитерской отрасли — {datetime.now(MOSCOW_TZ).strftime('%d.%m.%Y')}*\n\n{text}"
-        )
-        for chat_id in list(subscribers):
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-            except Exception as e:
-                logger.warning("Не удалось отправить %s: %s", chat_id, e)
+        analysis = await get_crew_analysis("weekly")
+        header = f"🌐 *Мировые тренды кондитерки — {datetime.now().strftime('%d.%m.%Y')}*\n\n"
+        full_text = header + analysis
+        for i in range(0, len(full_text), 4000):
+            await context.bot.send_message(
+                chat_id=CHAT_ID,
+                text=full_text[i:i+4000],
+                parse_mode="Markdown"
+            )
     except Exception as e:
-        logger.error("weekly_digest_job error: %s", e)
+        await context.bot.send_message(chat_id=CHAT_ID, text=f"Ошибка: {e}")
 
+def load_chat_id():
+    global CHAT_ID
+    try:
+        with open("/tmp/slava_chat_id.txt", "r") as f:
+            CHAT_ID = int(f.read().strip())
+    except:
+        pass
 
-# ── Запуск ──────────────────────────────────────────────────────────────────
+def save_chat_id(chat_id):
+    global CHAT_ID
+    CHAT_ID = chat_id
+    with open("/tmp/slava_chat_id.txt", "w") as f:
+        f.write(str(chat_id))
 
-def main() -> None:
+async def start(update, context: ContextTypes.DEFAULT_TYPE):
+    save_chat_id(update.effective_chat.id)
+    await update.message.reply_text(
+        "👋 *Привет, Андрей! Это Слава.*\n\n"
+        "Теперь работаю как команда из 4 агентов:\n"
+        "🔍 Аналитик рынка\n"
+        "🏭 Производственник\n"
+        "💰 Финансист\n"
+        "⚔️ Конкурентный разведчик\n"
+        "🎯 + итоговые решения на неделю\n\n"
+        "📅 *Расписание:*\n"
+        "🌅 Каждый день в 8:00 — рынок России\n"
+        "🌐 Воскресенье в 9:00 — мировые тренды\n\n"
+        "Команды:\n"
+        "/news — анализ прямо сейчас\n"
+        "/weekly — мировой дайджест сейчас\n\n"
+        "Готов! 🚀",
+        parse_mode="Markdown"
+    )
+
+async def news_command(update, context: ContextTypes.DEFAULT_TYPE):
+    save_chat_id(update.effective_chat.id)
+    await update.message.reply_text("⏳ Запускаю 4 агентов, подожди 1-2 минуты...")
+    analysis = await get_crew_analysis("daily")
+    header = f"📰 *Кондитерский рынок России — {datetime.now().strftime('%d.%m.%Y')}*\n\n"
+    full_text = header + analysis
+    for i in range(0, len(full_text), 4000):
+        await update.message.reply_text(full_text[i:i+4000], parse_mode="Markdown")
+
+async def weekly_command(update, context: ContextTypes.DEFAULT_TYPE):
+    save_chat_id(update.effective_chat.id)
+    await update.message.reply_text("⏳ Запускаю 4 агентов на мировые тренды...")
+    analysis = await get_crew_analysis("weekly")
+    header = f"🌐 *Мировые тренды кондитерки — {datetime.now().strftime('%d.%m.%Y')}*\n\n"
+    full_text = header + analysis
+    for i in range(0, len(full_text), 4000):
+        await update.message.reply_text(full_text[i:i+4000], parse_mode="Markdown")
+
+def main():
+    load_chat_id()
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("news", news_command))
+    app.add_handler(CommandHandler("weekly", weekly_command))
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("news", cmd_news))
-    app.add_handler(CommandHandler("weekly", cmd_weekly))
+    jq = app.job_queue
+    jq.run_daily(send_daily_news, time=time(5, 0))
+    jq.run_daily(send_weekly_digest, time=time(6, 0), days=(6,))
 
-    job_queue = app.job_queue
-
-    # Ежедневно в 8:00 МСК
-    job_queue.run_daily(
-        daily_news_job,
-        time=datetime.now(MOSCOW_TZ).replace(hour=8, minute=0, second=0, microsecond=0).timetz(),
-        days=(0, 1, 2, 3, 4, 5, 6),
-    )
-
-    # Каждое воскресенье в 9:00 МСК (weekday 6 = воскресенье)
-    job_queue.run_daily(
-        weekly_digest_job,
-        time=datetime.now(MOSCOW_TZ).replace(hour=9, minute=0, second=0, microsecond=0).timetz(),
-        days=(6,),
-    )
-
-    logger.info("Слава запущен.")
+    logger.info("✅ Слава (4 агента) запущен!")
     app.run_polling(drop_pending_updates=True)
-
 
 if __name__ == "__main__":
     main()
