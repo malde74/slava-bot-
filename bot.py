@@ -97,21 +97,21 @@ async def get_crew_analysis(news_type: str) -> str:
 
     # Агенты 2-4 — с паузой 15 сек между запросами
     # Передаём только короткое резюме чтобы не превышать лимит токенов
-    short_news = raw_news[:800] if len(raw_news) > 800 else raw_news
+    short_news = raw_news[:400] if len(raw_news) > 800 else raw_news
     
     for agent in AGENTS[1:]:
         logger.info(f"Пауза 15 сек перед агентом: {agent['role']}...")
-        await asyncio.sleep(15)
+        await asyncio.sleep(30)
         msg = f"Новости кондитерского рынка ({today}):\n\n{short_news}\n\nДай краткий анализ (3-4 предложения)."
         result = await call_claude(agent["prompt"], msg, use_search=False)
         results.append(f"{agent['emoji']} *{agent['role']}*\n{result}")
 
     # Итоговый синтез
     logger.info("Пауза перед синтезом...")
-    await asyncio.sleep(15)
+    await asyncio.sleep(30)
     ceo_prompt = "Ты — CEO шоколадной фабрики Томер. Получил анализ от экспертов. Сформулируй 3 конкретных действия на эту неделю. Очень кратко — не более 5 строк."
     # Передаём только короткие выжимки
-    short_results = "\n\n".join([r[:300] for r in results])
+    short_results = "\n\n".join([r[:200] for r in results])
     synthesis = await call_claude(ceo_prompt, f"Анализ команды:\n\n{short_results}\n\nЧто делаем?", use_search=False)
     results.append(f"🎯 *Решения на неделю*\n{synthesis}")
 
