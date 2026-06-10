@@ -46,7 +46,7 @@ async def call_claude(system: str, user_msg: str, use_search: bool = False) -> s
         return "Ошибка: API ключ не настроен."
     
     payload = {
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-sonnet-4-5",
         "max_tokens": 600,
         "system": system,
         "messages": [{"role": "user", "content": user_msg}]
