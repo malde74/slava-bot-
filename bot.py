@@ -92,14 +92,18 @@ BANKRUPTCY_AGENT = {
 Если конкретных лотов нет — дай общую картину что сейчас есть на рынке. Без вступлений."""
 }
 
-async def call_claude(system: str, user_msg: str, use_search: bool = False) -> str:
+async def call_claude(system: str, user_msg: str, use_search: bool = False, model: str = None) -> str:
     api_key = ANTHROPIC_API_KEY
     if not api_key:
         logger.error("ANTHROPIC_API_KEY is empty!")
         return "Ошибка: API ключ не настроен."
     
+    # Use Sonnet for search (better web results), Haiku for analysis (cheaper)
+    if model is None:
+        model = "claude-sonnet-4-6"
+    
     payload = {
-        "model": "claude-haiku-4-5-20251001",
+        "model": model,
         "max_tokens": 600,
         "system": system,
         "messages": [{"role": "user", "content": user_msg}]
