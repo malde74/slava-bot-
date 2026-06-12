@@ -50,6 +50,33 @@ AGENTS = [
         "use_search": False
     },
     {
+        "emoji": "📡",
+        "role": "Репутация Томер",
+        "prompt": """Ты — специалист по мониторингу репутации компании Томер (шоколадная фабрика, Поярково, Солнечногорск).
+
+Найди ВСЕ свежие упоминания Томера в интернете за последние 7 дней:
+1. Отзывы клиентов — на маркетплейсах WB, Ozon, в соцсетях, на сайтах
+2. Отзывы сотрудников — hh.ru, dreamjob.ru, glassdoor, otzovik
+3. Упоминания продукции — шоколад Томер, глазури, начинки, Пастальяно, Томер Эксперт
+4. Новости и статьи — СМИ, телеграм-каналы, форумы кондитеров
+5. Упоминания фабрики в Поярково или Солнечногорске
+6. Любые жалобы или похвалы в адрес компании
+
+Ищи по запросам: "Томер шоколад", "tomerchoco", "Томер глазурь", "Томер начинка", "фабрика Томер", "Томер Поярково"
+
+Проверяй на этих площадках:
+— Отзовик (otzovik.com), IRecommend (irecommend.ru)
+— Яндекс.Маркет, Яндекс.Отзывы
+— Zoon.ru, Flamp.ru, 2GIS
+— Wildberries, Ozon (отзывы на товары)
+— hh.ru, dreamjob.ru (отзывы сотрудников)
+— ВКонтакте, Telegram-каналы кондитеров
+— Профессиональные форумы: forum.say7.info, хлебопечка.ру, кондитерские сообщества
+
+Формат: что говорят люди о Томере — позитив, негатив, нейтрально. Конкретные цитаты если есть. Выводы что нужно исправить или усилить. Без вступлений.""",
+        "use_search": True
+    },
+    {
         "emoji": "⚔️",
         "role": "Конкурентный разведчик",
         "prompt": """Ты — специалист по конкурентной разведке шоколадной фабрики Томер.
@@ -68,6 +95,29 @@ AGENTS = [
         "use_search": False
     }
 ]
+
+VKUSVILL_AGENT = {
+    "emoji": "🛒",
+    "role": "Аналитик Вкусвилл",
+    "prompt": """Ты — аналитик по ключевому клиенту Вкусвилл для шоколадной фабрики Томер.
+
+Контекст: Томер является лидирующим поставщиком шоколада под СТМ (собственная торговая марка) для Вкусвилл. Это стратегически важный клиент.
+
+Найди и проанализируй всё актуальное по Вкусвилл:
+1. Новости компании — открытия, закрытия, стратегия, финансы
+2. Новые СТМ продукты шоколадной/кондитерской категории
+3. Изменения в ассортименте шоколадных позиций
+4. Конкуренты Томера в категории шоколада у Вкусвилл
+5. Тренды категории сладкого во Вкусвилл — что растёт, что падает
+6. Любые риски или возможности для Томера как поставщика
+7. Отзывы покупателей на продукцию Томера во Вкусвилл — ищи на:
+   — сайте vkusvill.ru (отзывы на шоколадные позиции СТМ)
+   — Отзовик, IRecommend по запросу "Вкусвилл шоколад"
+   — ВКонтакте, Telegram по упоминаниям шоколада Вкусвилл
+   — Яндекс.Маркет, отзывы на товары Вкусвилл категории шоколад
+
+Формат: структурированный отчёт с конкретными фактами и выводами для Томера. Без вступлений."""
+}
 
 BANKRUPTCY_AGENT = {
     "emoji": "🏭",
@@ -213,7 +263,8 @@ async def start(update, context: ContextTypes.DEFAULT_TYPE):
         "🌐 Воскресенье 9:00 — мировые тренды\n\n"
         "/news — рынок России сейчас\n"
         "/weekly — мировые тренды\n"
-        "/lots — лоты банкротства сейчас",
+        "/lots — лоты банкротства\n"
+        "/vkusvill — аналитика Вкусвилл сейчас",
         parse_mode="Markdown"
     )
 
@@ -226,6 +277,16 @@ async def weekly_command(update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
     await update.message.reply_text("⏳ Запускаю агентов на мировые тренды...")
     await send_analysis(update.message.reply_text, "weekly")
+
+async def vkusvill_command(update, context: ContextTypes.DEFAULT_TYPE):
+    save_chat_id(update.effective_chat.id)
+    await update.message.reply_text("🛒 Собираю аналитику по Вкусвилл...")
+    query = f"Найди все актуальные новости и аналитику по Вкусвилл ({datetime.now().strftime('%d.%m.%Y')}): новые продукты, изменения ассортимента шоколада, стратегия, финансы, СТМ категория."
+    result = await call_claude(VKUSVILL_AGENT["prompt"], query, use_search=True)
+    header = f"🛒 *Вкусвилл — {datetime.now().strftime('%d.%m.%Y')}*\n_(Томер — лидер СТМ шоколада)_\n\n"
+    full = header + result
+    for i in range(0, len(full), 4000):
+        await update.message.reply_text(full[i:i+4000], parse_mode="Markdown")
 
 async def bankruptcy_command(update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
@@ -257,6 +318,7 @@ def main():
     app.add_handler(CommandHandler("news", news_command))
     app.add_handler(CommandHandler("weekly", weekly_command))
     app.add_handler(CommandHandler("lots", bankruptcy_command))
+    app.add_handler(CommandHandler("vkusvill", vkusvill_command))
     app.job_queue.run_daily(auto_daily, time=time(5, 0))
     app.job_queue.run_daily(auto_weekly, time=time(6, 0), days=(6,))
     logger.info("✅ Слава запущен!")
