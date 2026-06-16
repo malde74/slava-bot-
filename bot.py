@@ -244,8 +244,26 @@ async def send_analysis(send_fn, news_type: str):
         label = "Кондитерский рынок России" if news_type == "daily" else "Мировые тренды кондитерки"
         header = f"{prefix} *{label} — {datetime.now().strftime('%d.%m.%Y')}*\n\n"
         full = header + analysis
-        for i in range(0, len(full), 4000):
-            await send_fn(full[i:i+4000], parse_mode="Markdown")
+        # Split by paragraphs to avoid cutting mid-sentence
+        parts = []
+        current = ""
+        for paragraph in full.split("\n\n"):
+            if len(current) + len(paragraph) + 2 < 3800:
+                current += paragraph + "\n\n"
+            else:
+                if current:
+                    parts.append(current.strip())
+                current = paragraph + "\n\n"
+        if current:
+            parts.append(current.strip())
+        for part in parts:
+            try:
+                await send_fn(part, parse_mode="Markdown")
+            except Exception:
+                # Fallback to plain text if Markdown fails
+                clean = part.replace("*", "").replace("_", "").replace("`", "").replace("[", "").replace("]", "")
+                await send_fn(clean)
+            await asyncio.sleep(1)
     except Exception as e:
         await send_fn(f"❌ Ошибка: {e}")
 
@@ -285,8 +303,20 @@ async def vkusvill_command(update, context: ContextTypes.DEFAULT_TYPE):
     result = await call_claude(VKUSVILL_AGENT["prompt"], query, use_search=True)
     header = f"🛒 *Вкусвилл — {datetime.now().strftime('%d.%m.%Y')}*\n_(Томер — лидер СТМ шоколада)_\n\n"
     full = header + result
-    for i in range(0, len(full), 4000):
-        await update.message.reply_text(full[i:i+4000], parse_mode="Markdown")
+    parts = []
+    current = ""
+    for paragraph in full.split("\n\n"):
+        if len(current) + len(paragraph) + 2 < 3800:
+            current += paragraph + "\n\n"
+        else:
+            if current:
+                parts.append(current.strip())
+            current = paragraph + "\n\n"
+    if current:
+        parts.append(current.strip())
+    for part in parts:
+        await update.message.reply_text(part, parse_mode="Markdown")
+        await asyncio.sleep(1)
 
 async def bankruptcy_command(update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
@@ -295,8 +325,20 @@ async def bankruptcy_command(update, context: ContextTypes.DEFAULT_TYPE):
     result = await call_claude(BANKRUPTCY_AGENT["prompt"], query, use_search=True)
     header = f"🏭 *Лоты банкротства — {datetime.now().strftime('%d.%m.%Y')}*\n_(Солнечногорск/Химки/МО + оборудование по России)_\n\n"
     full = header + result
-    for i in range(0, len(full), 4000):
-        await update.message.reply_text(full[i:i+4000], parse_mode="Markdown")
+    parts = []
+    current = ""
+    for paragraph in full.split("\n\n"):
+        if len(current) + len(paragraph) + 2 < 3800:
+            current += paragraph + "\n\n"
+        else:
+            if current:
+                parts.append(current.strip())
+            current = paragraph + "\n\n"
+    if current:
+        parts.append(current.strip())
+    for part in parts:
+        await update.message.reply_text(part, parse_mode="Markdown")
+        await asyncio.sleep(1)
 
 async def auto_daily(context: ContextTypes.DEFAULT_TYPE):
     load_chat_id()
